@@ -23,3 +23,6 @@
     - awx_execution_manage is defined
     - awx_execution_manage | bool
     - awx_node_type == "execution"
+
+- name: Reboot both controller and workers
+  ansible.builtin.reboot:
