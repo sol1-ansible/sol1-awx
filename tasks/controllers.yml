@@ -1,0 +1,126 @@
+---
+
+- name: Create AWX directories
+  ansible.builtin.file:
+    name: "{{ directory.name }}"
+    mode: "{{ directory.mode }}"
+    owner: "{{ directory.owner | default(awx_uid) }}"
+    group: "{{ directory.group | default(awx_gid) }}"
+    state: directory
+  loop:
+    - { name: "{{ awx_directory }}", mode: "00755", owner: root, group: root }
+    - { name: "{{ awx_directory }}/projects", mode: "00775" }
+    - { name: "{{ awx_directory }}/tls", mode: "00770" }
+    - { name: "{{ awx_directory }}/receptor", mode: "00770" }
+    - { name: "{{ awx_directory }}/containers", mode: "00775" }
+    - { name: "{{ awx_directory }}/receptor_socket", mode: "00750" }
+    - { name: "{{ awx_directory }}/supervisor-socket", mode: "00750" }
+    - { name: "{{ awx_directory }}/rsyslog-socket", mode: "00750" }
+    - { name: "{{ awx_directory }}/rsyslog-config", mode: "00750" }
+    - { name: "{{ awx_directory }}/redis_socket", mode: "00777", owner: root, group: root }
+  loop_control:
+    loop_var: directory
+
+- name: Generate receptor CA cert and key
+  ansible.builtin.import_tasks: receptor_tls_ca.yml
+
+- name: Generate receptor job signing cert and key
+  ansible.builtin.import_tasks: receptor_tls_signer.yml
+
+- name: Generate receptor cert and key
+  ansible.builtin.import_tasks: receptor_tls_certs.yml
+
+- name: Template AWX configuration files
+  ansible.builtin.template:
+    src: "{{ config.src }}"
+    dest: "{{ awx_directory }}/{{ config.dst }}"
+    mode: "{{ config.mode }}"
+    owner: '{{ config.owner | default(awx_uid) }}'
+    group: '{{ config.group | default(awx_gid) }}'
+  loop:
+    - { src: docker-compose.yml.j2, dst: docker-compose.yml, mode: "00600", owner: "root", group: "root" }
+    - { src: settings.py.j2, dst: settings.py, mode: "00600" }
+    - { src: credentials.py.j2, dst: credentials.py, mode: "00600" }
+    - { src: redis.conf.j2, dst: redis.conf, mode: "00664" }
+    - { src: awx-nginx.conf.j2, dst: awx-nginx.conf, mode: "00640" }
+    - { src: SECRET_KEY.j2, dst: SECRET_KEY, mode: "00600" }
+    - { src: launch_awx_task.sh.j2, dst: launch_awx_task.sh, mode: "00744" }
+    - { src: launch_awx.sh.j2, dst: launch_awx.sh, mode: "00744" }
+    - { src: receptor-default.conf.j2, dst: receptor-default.conf, mode: "00644" }
+    - { src: receptor.sh.j2, dst: receptor.sh, mode: "00644" }
+    - { src: execution_environments.py.j2, dst: execution_environments.py, mode: "00644" }
+    - { src: environment.sh.j2, dst: environment.sh, mode: "00600" }
+    - { src: work-private-key.pem.j2, dst: tls/work-private-key.pem, mode: "00600" }
+    - { src: work-public-key.pem.j2, dst: tls/work-public-key.pem, mode: "00600" }
+    - { src: receptor-ca.crt.j2, dst: tls/receptor-ca.crt, mode: "00640" }
+    - { src: receptor-ca.key.j2, dst: tls/receptor-ca.key, mode: "00600" }
+    - { src: receptor.crt.j2, dst: tls/receptor.crt, mode: "00640" }
+    - { src: receptor.key.j2, dst: tls/receptor.key, mode: "00600" }
+    - { src: awx_main_tasks_system_monkeypatch.py.j2, dst: awx_main_tasks_system_monkeypatch.py, mode: "00644" }
+  loop_control:
+    loop_var: config
+  no_log: "{{ awx_no_log }}"
+  register: awx_configs
+
+- name: Create Postgres directories
+  ansible.builtin.file:
+    name: "{{ pg_directory }}"
+    state: directory
+    mode: "00755"
+  with_items:
+    - "{{ awx_pg_directory }}"
+    - "{{ awx_pg_directory }}/data"
+  loop_control:
+    loop_var: pg_directory
+  when: awx_local_database | bool
+
+- name: Template Postgres configuration files
+  ansible.builtin.template:
+    src: "{{ pg_config.src }}"
+    dest: "{{ awx_pg_directory }}/{{ pg_config.dst }}"
+    mode: "00600"
+  with_items:
+    - { src: docker-compose-postgres.yml.j2, dst: docker-compose.yml }
+  loop_control:
+    loop_var: pg_config
+  no_log: "{{ awx_no_log }}"
+  register: postgres_configs
+  when: awx_local_database | bool
+
+- name: Start || Restart Postgres containers
+  community.docker.docker_compose:
+    project_name: postgres
+    project_src: "{{ awx_pg_directory }}"
+    restarted: "{{ postgres_configs is changed | bool }}"
+  when: awx_local_database | bool
+
+- name: Start || Restart AWX containers
+  community.docker.docker_compose:
+    project_name: awx
+    project_src: "{{ awx_directory }}"
+    restarted: "{{ awx_configs is changed | bool }}"
+  when: awx_started | bool
+
+- name: Test AWX is available
+  ansible.builtin.uri:
+    url: "http://{{ inventory_hostname }}:8052"
+    method: GET
+  register: _result
+  until: _result.status == 200
+  retries: 30
+  delay: 10
+  when: awx_started | bool
+
+- name: Debug -  uri _results
+  ansible.builtin.debug:
+    var: _result
+    verbosity: 2
+  when: awx_started | bool
+
+- name: Start || Restart AWX EE container
+  community.docker.docker_compose:
+    project_name: awx
+    services: awx-ee
+    project_src: "{{ awx_directory }}"
+    restarted: "{{ awx_configs is changed | bool }}"
+  when: awx_started | bool

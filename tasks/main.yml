@@ -1,0 +1,25 @@
+---
+- name: Debug feature_flags
+  ansible.builtin.debug:
+    var: "{{ item }}"
+    verbosity: 2
+  loop:
+    - awx_started
+    - awx_controller_manage
+    - awx_execution_manage
+    - awx_local_database
+    - awx_node_action
+
+- name: Include AWX control node tasks
+  ansible.builtin.import_tasks: "controllers.yml"
+  when:
+    - awx_controller_manage is defined
+    - awx_controller_manage | bool
+    - awx_node_type == "control"
+
+- name: Include AWX execution node tasks
+  ansible.builtin.import_tasks: "execution.yml"
+  when:
+    - awx_execution_manage is defined
+    - awx_execution_manage | bool
+    - awx_node_type == "execution"

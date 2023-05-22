@@ -1,0 +1,24 @@
+- log-level: {{ receptor_log_level }}
+- local-only: null
+- node:
+   firewallrules:
+    - action: reject
+      tonode: HOSTNAME
+      toservice: control
+- control-service:
+    service: control
+    filename: /var/run/receptor/receptor.sock
+    permissions: '0660'
+- work-command:
+    worktype: local
+    command: ansible-runner
+    params: worker
+    allowruntimeparams: true
+- tls-client:
+    cert: /etc/receptor/tls/receptor.crt
+    key: /etc/receptor/tls/receptor.key
+    name: tlsclient
+    rootcas: /etc/receptor/tls/ca/receptor-ca.crt
+- work-signing:
+    privatekey: /etc/receptor/signing/work-private-key.pem
+    tokenexpiration: 1m
